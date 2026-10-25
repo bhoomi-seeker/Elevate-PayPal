@@ -1,0 +1,50 @@
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Java and Spring Boot
+**/target/
+*.class
+*.jar
+*.war
+*.ear
+hs_err_pid*
+
+# Node.js and frontend build files
+**/node_modules/
+**/dist/
+**/.vite/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# IDE and editor files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.iml
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs and temporary files
+*.log
+logs/
+tmp/
+temp/
+
+# Test and coverage output
+**/coverage/
+.coverage
+.pytest_cache/
+
+# Local database and application data
+*.sqlite
+*.sqlite3
