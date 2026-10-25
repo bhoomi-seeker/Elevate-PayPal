@@ -15,17 +15,17 @@ backend/
 ├── src/
 │   ├── main/
 │   │   ├── java/com/paybridge/
-│   │   │   ├── controller/     # REST controllers (HealthController, QrController)
-│   │   │   ├── dto/            # DTOs (HealthResponse, QrParseRequest, QrParseResponse, ErrorResponse)
-│   │   │   ├── exception/      # Exception handlers (GlobalExceptionHandler, InvalidQrException)
-│   │   │   ├── service/        # Business logic services (QrParserService)
+│   │   │   ├── controller/     # REST controllers (HealthController, QrController, CompatibilityController, AiController, EvaluationController, PaymentController)
+│   │   │   ├── dto/            # DTOs (HealthResponse, QrParseRequest, QrParseResponse, CompatibilityEvaluationRequest, CompatibilityEvaluationResponse, EvidenceItem, AiExplanationRequest, AiExplanationResponse, EvaluationHistoryResponse, OrderCreateRequest, OrderCreateResponse, OrderCaptureResponse, ErrorResponse)
+│   │   │   ├── exception/      # Exception handlers (GlobalExceptionHandler, InvalidQrException, InvalidEvaluationRequestException, InvalidPaymentRequestException, PaymentServiceException, ResourceNotFoundException)
+│   │   │   ├── service/        # Business logic & engines (QrParserService, CompatibilityEngineService, EvidenceStore, AiExplanationService, PayPalPaymentService)
 │   │   │   └── PayBridgeApplication.java
 │   │   └── resources/
 │   │       └── application.properties
 │   └── test/
 │       └── java/com/paybridge/
-│           ├── controller/     # Controller tests (HealthControllerTest, QrControllerTest)
-│           ├── service/        # Service unit tests (QrParserServiceTest)
+│           ├── controller/     # Controller tests (HealthControllerTest, QrControllerTest, CompatibilityControllerTest, AiControllerTest, EvaluationControllerTest, PaymentControllerTest)
+│           ├── service/        # Service unit tests (QrParserServiceTest, CompatibilityEngineServiceTest, AiExplanationServiceTest, PayPalPaymentServiceTest)
 │           └── PayBridgeApplicationTests.java
 ├── .gitignore
 ├── mvnw
@@ -126,18 +126,184 @@ curl -X POST http://localhost:8081/api/qr/parse \
 
 HTTP Status: `200 OK`
 
-#### Error Response (e.g. malformed or invalid input)
+---
+
+### 3. Evaluate Payment Route Compatibility
+
+Evaluates a candidate payment provider using deterministic documented capabilities and available evidence.
+
+- **Method:** `POST`
+- **URL:** `http://localhost:8081/api/compatibility/evaluate`
+- **Content-Type:** `application/json`
+
+#### Example Request (PowerShell)
+
+```powershell
+$body = @{
+  qrText = "upi://pay?pa=merchant@example&cu=INR"
+  visitorCountry = "DE"
+  candidateProvider = "example-provider"
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri "http://localhost:8081/api/compatibility/evaluate" -Method Post -Body $body -ContentType "application/json" | ConvertTo-Json -Depth 5
+```
+
+#### Example Request (curl)
+
+```bash
+curl -X POST http://localhost:8081/api/compatibility/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "qrText": "upi://pay?pa=merchant@example&cu=INR",
+    "visitorCountry": "DE",
+    "candidateProvider": "example-provider"
+  }'
+```
+
+#### Expected Response
 
 ```json
 {
-  "timestamp": "2026-10-25T10:00:00Z",
-  "status": 400,
-  "error": "INVALID_REQUEST",
-  "message": "Invalid amount (am): Value must be greater than zero.",
-  "path": "/api/qr/parse"
+  "evaluationId": "EVAL-A1B2C3D4",
+  "status": "UNVERIFIED",
+  "reason": "Provider support has not been verified. No authoritative documentation establishes payment route compatibility for 'example-provider' from country 'DE'.",
+  "evidence": [],
+  "limitations": [
+    "Parsing does not verify merchant legal identity, bank account legitimacy, or terminal security.",
+    "Compatibility evaluation reflects documented technical capabilities and does not guarantee bank authorization at transaction time.",
+    "Compatibility has not been confirmed. Unverified status indicates lack of documented evidence."
+  ],
+  "evaluatedAt": "2026-10-25T16:00:00Z"
 }
 ```
 
-HTTP Status: `400 Bad Request`
+HTTP Status: `200 OK`
 
-> **Payment & Security Disclaimer:** Parsing extracts present query parameters only. Parsing does not verify merchant identity, does not prove payment route compatibility, and never initiates or executes a payment.
+#### Allowed Status Values
+
+- `COMPATIBLE`: Reliable, active, non-conflicting evidence establishes support and all conditions are met.
+- `CONDITIONAL`: Support depends on additional requirements or merchant/bank enablement prerequisites.
+- `UNVERIFIED`: Insufficient, expired, conflicting, or absent evidence.
+
+---
+
+### 4. Explain an Evaluation (AI Explanation)
+
+Generates a human-readable explanation and limitations for an existing compatibility evaluation.
+
+- **Method:** `POST`
+- **URL:** `http://localhost:8081/api/ai/explain`
+- **Content-Type:** `application/json`
+
+#### Example Request
+
+```json
+{
+  "evaluationId": "EVAL-A1B2C3D4"
+}
+```
+
+#### Expected Response
+
+```json
+{
+  "evaluationId": "EVAL-A1B2C3D4",
+  "explanation": "Provider support has not been verified. No authoritative documentation establishes payment route compatibility for 'example-provider' from country 'DE'. Further evidence is required.",
+  "limitations": [
+    "Parsing does not verify merchant legal identity, bank account legitimacy, or terminal security.",
+    "Compatibility evaluation reflects documented technical capabilities and does not guarantee bank authorization at transaction time.",
+    "Compatibility has not been confirmed. Unverified status indicates lack of documented evidence."
+  ]
+}
+```
+
+HTTP Status: `200 OK`
+
+---
+
+### 5. Retrieve Evaluation History
+
+Returns saved evaluation records for the dashboard and AG Grid.
+
+- **Method:** `GET`
+- **URL:** `http://localhost:8081/api/evaluations`
+
+#### Expected Response
+
+```json
+{
+  "items": [
+    {
+      "evaluationId": "EVAL-A1B2C3D4",
+      "status": "UNVERIFIED",
+      "reason": "Provider support has not been verified.",
+      "evidence": [],
+      "limitations": [
+        "Compatibility has not been confirmed."
+      ],
+      "evaluatedAt": "2026-10-25T16:00:00Z"
+    }
+  ],
+  "total": 1
+}
+```
+
+HTTP Status: `200 OK`
+
+---
+
+### 6. Create PayPal Sandbox Order
+
+Creates a test payment order through the PayPal Sandbox API.
+
+- **Method:** `POST`
+- **URL:** `http://localhost:8081/api/payments/orders`
+- **Content-Type:** `application/json`
+
+#### Example Request
+
+```json
+{
+  "amount": "5.00",
+  "currency": "USD"
+}
+```
+
+#### Expected Response
+
+```json
+{
+  "orderId": "SANDBOX_ORDER_ID",
+  "status": "CREATED",
+  "approvalUrl": "https://www.sandbox.paypal.com/checkoutnow?token=SANDBOX_ORDER_ID"
+}
+```
+
+HTTP Status: `200 OK`
+
+---
+
+### 7. Capture PayPal Sandbox Order
+
+Captures an approved PayPal Sandbox order.
+
+- **Method:** `POST`
+- **URL:** `http://localhost:8081/api/payments/orders/{orderId}/capture`
+
+#### Expected Response
+
+```json
+{
+  "orderId": "SANDBOX_ORDER_ID",
+  "status": "COMPLETED"
+}
+```
+
+HTTP Status: `200 OK`
+
+---
+
+> **Payment & Security Disclaimer:**
+> - Compatibility evaluation reflects documented technical evidence only.
+> - A valid QR payload does not verify merchant legitimacy or guarantee payment acceptance.
+> - PayPal Sandbox integration is an isolated demonstration and does not transfer funds or settle to the merchant encoded in a scanned UPI QR code.
