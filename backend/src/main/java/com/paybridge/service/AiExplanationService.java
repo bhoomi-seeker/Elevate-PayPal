@@ -9,12 +9,14 @@ import com.paybridge.exception.InvalidEvaluationRequestException;
 import com.paybridge.exception.ResourceNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -27,35 +29,58 @@ import java.util.Map;
  * CRITICAL TRUST BOUNDARIES:
  * - The AI service explains existing decisions only.
  * - The AI explanation MUST NOT change the compatibility status, invent provider support, or authorize payments.
- * - If the external AI service is unavailable or unconfigured, the service falls back gracefully
+ * - If the external AI service is unavailable, overloaded, or unconfigured, the service falls back gracefully
  *   to a deterministic explanation matching the recorded evaluation.
+ * - API keys and credentials are kept strictly server-side and never logged or exposed in URLs or error responses.
  */
 @Service
 public class AiExplanationService {
 
     private static final Logger log = LoggerFactory.getLogger(AiExplanationService.class);
 
+    private static final int MAX_RETRIES = 2; // Up to 3 total attempts
+    private static final long INITIAL_BACKOFF_MS = 500L;
+
     private final CompatibilityEngineService compatibilityEngineService;
     private final ObjectMapper objectMapper;
     private final RestClient restClient;
 
+    @Value("${gemini.base-url:https://generativelanguage.googleapis.com}")
+    private String geminiBaseUrl;
+
     @Value("${gemini.api-key:}")
     private String geminiApiKey;
 
-    @Value("${gemini.model:gemini-1.5-flash}")
+    @Value("${gemini.model:gemini-3.8-flash}")
     private String geminiModel;
 
+    @Autowired
     public AiExplanationService(CompatibilityEngineService compatibilityEngineService, ObjectMapper objectMapper) {
+        this(compatibilityEngineService, objectMapper, null);
+    }
+
+    public AiExplanationService(CompatibilityEngineService compatibilityEngineService, ObjectMapper objectMapper, RestClient restClient) {
         this.compatibilityEngineService = compatibilityEngineService;
         this.objectMapper = objectMapper;
+        if (restClient != null) {
+            this.restClient = restClient;
+        } else {
+            SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+            requestFactory.setConnectTimeout(Duration.ofSeconds(5));
+            requestFactory.setReadTimeout(Duration.ofSeconds(15));
+            this.restClient = RestClient.builder()
+                    .requestFactory(requestFactory)
+                    .build();
+        }
+    }
 
-        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-        requestFactory.setConnectTimeout(Duration.ofSeconds(3));
-        requestFactory.setReadTimeout(Duration.ofSeconds(5));
-
-        this.restClient = RestClient.builder()
-                .requestFactory(requestFactory)
-                .build();
+    /**
+     * Testing / dynamic configuration hook.
+     */
+    public void configure(String geminiBaseUrl, String geminiModel, String geminiApiKey) {
+        this.geminiBaseUrl = geminiBaseUrl;
+        this.geminiModel = geminiModel;
+        this.geminiApiKey = geminiApiKey;
     }
 
     public AiExplanationResponse explain(AiExplanationRequest request) {
@@ -71,7 +96,7 @@ public class AiExplanationService {
         String explanation = null;
         if (geminiApiKey != null && !geminiApiKey.isBlank()) {
             try {
-                explanation = callGeminiApi(evaluation);
+                explanation = callGeminiWithRetry(evaluation);
             } catch (Exception e) {
                 log.warn("Gemini API call failed for evaluation '{}'; activating deterministic fallback: {}", evaluationId, e.getMessage());
             }
@@ -92,6 +117,166 @@ public class AiExplanationService {
         return new AiExplanationResponse(evaluationId, explanation, Collections.unmodifiableList(limitations));
     }
 
+    private String callGeminiWithRetry(CompatibilityEvaluationResponse evaluation) {
+        int attempt = 0;
+        long backoff = INITIAL_BACKOFF_MS;
+
+        while (true) {
+            attempt++;
+            try {
+                return executeGeminiRequest(evaluation);
+            } catch (GeminiApiException e) {
+                // Retry only transient 503 UNAVAILABLE or 429 TOO_MANY_REQUESTS
+                boolean isTransient = (e.getStatusCode() == 503 || e.getStatusCode() == 429);
+                if (isTransient && attempt <= MAX_RETRIES) {
+                    log.warn("Gemini API returned transient HTTP {} (attempt {}/{}). Retrying in {} ms. Diagnostic: {}",
+                            e.getStatusCode(), attempt, MAX_RETRIES + 1, backoff, e.getSanitizedMessage());
+                    try {
+                        Thread.sleep(backoff);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("Retry sleep interrupted", ie);
+                    }
+                    backoff *= 2; // Exponential backoff
+                    continue;
+                }
+                log.warn("Gemini API request failed permanently with HTTP {}: {}", e.getStatusCode(), e.getSanitizedMessage());
+                throw new IllegalStateException("Gemini API error (HTTP " + e.getStatusCode() + "): " + e.getSanitizedMessage(), e);
+            } catch (Exception e) {
+                log.warn("Gemini API invocation encountered unexpected error: {}", e.getMessage());
+                throw e;
+            }
+        }
+    }
+
+    private String executeGeminiRequest(CompatibilityEvaluationResponse evaluation) {
+        String prompt = buildPrompt(evaluation);
+        String cleanBaseUrl = (geminiBaseUrl != null && !geminiBaseUrl.isBlank())
+                ? geminiBaseUrl.trim().replaceAll("/+$", "")
+                : "https://generativelanguage.googleapis.com";
+        String modelName = (geminiModel != null && !geminiModel.isBlank()) ? geminiModel.trim() : "gemini-3.8-flash";
+
+        // Construct clean endpoint URL without passing credentials in query parameters
+        String url = cleanBaseUrl + "/v1beta/models/" + modelName + ":generateContent";
+
+        Map<String, Object> requestPayload = Map.of(
+                "contents", List.of(
+                        Map.of("parts", List.of(
+                                Map.of("text", prompt)
+                        ))
+                ),
+                "generationConfig", Map.of(
+                        "temperature", 0.2,
+                        "maxOutputTokens", 250
+                )
+        );
+
+        String rawResponse = restClient.post()
+                .uri(url)
+                .header("x-goog-api-key", geminiApiKey.trim())
+                .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.APPLICATION_JSON)
+                .body(requestPayload)
+                .exchange((request, response) -> {
+                    byte[] bytes = response.getBody().readAllBytes();
+                    String bodyString = new String(bytes, StandardCharsets.UTF_8);
+
+                    if (!response.getStatusCode().is2xxSuccessful()) {
+                        String sanitizedError = sanitizeErrorBody(bodyString);
+                        throw new GeminiApiException(response.getStatusCode().value(), sanitizedError);
+                    }
+
+                    if (bytes.length == 0 || bodyString.isBlank()) {
+                        throw new IllegalStateException("Gemini returned an empty response body.");
+                    }
+
+                    return bodyString;
+                });
+
+        return parseGeminiResponseText(rawResponse);
+    }
+
+    private String sanitizeErrorBody(String body) {
+        if (body == null || body.isBlank()) {
+            return "No response body returned from upstream.";
+        }
+        try {
+            JsonNode root = objectMapper.readTree(body);
+            JsonNode errorNode = root.path("error");
+            if (!errorNode.isMissingNode()) {
+                String message = errorNode.path("message").asText();
+                String status = errorNode.path("status").asText();
+                int code = errorNode.path("code").asInt();
+                return String.format("[%s %d] %s", status, code, scrubSecrets(message));
+            }
+        } catch (Exception ignored) {
+            // Not JSON or non-standard payload; scrub raw body
+        }
+        return scrubSecrets(body);
+    }
+
+    private String scrubSecrets(String input) {
+        if (input == null) return "";
+        if (geminiApiKey != null && !geminiApiKey.isBlank()) {
+            input = input.replace(geminiApiKey.trim(), "[REDACTED_API_KEY]");
+        }
+        return input.replaceAll("(?i)(key|token|secret|password)=[^&\\s]+", "$1=[REDACTED]");
+    }
+
+    private String parseGeminiResponseText(String rawJson) {
+        try {
+            JsonNode root = objectMapper.readTree(rawJson);
+            JsonNode candidates = root.path("candidates");
+            if (!candidates.isArray() || candidates.isEmpty()) {
+                log.warn("Gemini response contained no candidates.");
+                return null;
+            }
+
+            JsonNode candidate = candidates.get(0);
+            String finishReason = candidate.path("finishReason").asText("");
+            if ("SAFETY".equalsIgnoreCase(finishReason) || "BLOCK".equalsIgnoreCase(finishReason) || "RECITATION".equalsIgnoreCase(finishReason)) {
+                log.warn("Gemini candidate blocked or restricted by policy: {}", finishReason);
+                return null;
+            }
+
+            JsonNode parts = candidate.path("content").path("parts");
+            if (!parts.isArray() || parts.isEmpty()) {
+                log.warn("Gemini candidate content parts were missing or empty.");
+                return null;
+            }
+
+            // In reasoning/thinking models (e.g. Gemini 3.8 Flash), filter out internal reasoning parts (thought=true)
+            StringBuilder textBuilder = new StringBuilder();
+            for (JsonNode part : parts) {
+                if (!part.path("thought").asBoolean(false) && part.has("text")) {
+                    textBuilder.append(part.path("text").asText());
+                }
+            }
+
+            String text = textBuilder.toString().trim();
+            if (!text.isEmpty()) {
+                return text;
+            }
+
+            // Fallback to first part containing text if all parts had thought=true
+            for (JsonNode part : parts) {
+                if (part.has("text")) {
+                    String partText = part.path("text").asText().trim();
+                    if (!partText.isEmpty()) {
+                        return partText;
+                    }
+                }
+            }
+
+            log.warn("Gemini response parts contained no non-empty text content.");
+            return null;
+
+        } catch (Exception e) {
+            log.warn("Error parsing Gemini API response JSON: {}", e.getMessage());
+            return null;
+        }
+    }
+
     private String generateFallbackExplanation(CompatibilityEvaluationResponse evaluation) {
         return switch (evaluation.status()) {
             case COMPATIBLE ->
@@ -105,28 +290,6 @@ public class AiExplanationService {
                     "Provider support has not been verified. Further evidence is required. "
                             + evaluation.reason();
         };
-    }
-
-    private String callGeminiApi(CompatibilityEvaluationResponse evaluation) {
-        String prompt = buildPrompt(evaluation);
-        String url = "https://generativelanguage.googleapis.com/v1beta/models/" + geminiModel + ":generateContent?key=" + geminiApiKey;
-
-        Map<String, Object> requestPayload = Map.of(
-                "contents", List.of(
-                        Map.of("parts", List.of(
-                                Map.of("text", prompt)
-                        ))
-                )
-        );
-
-        String rawResponse = restClient.post()
-                .uri(url)
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(requestPayload)
-                .retrieve()
-                .body(String.class);
-
-        return parseGeminiResponseText(rawResponse);
     }
 
     private String buildPrompt(CompatibilityEvaluationResponse evaluation) {
@@ -151,16 +314,22 @@ public class AiExplanationService {
         );
     }
 
-    private String parseGeminiResponseText(String rawJson) {
-        try {
-            JsonNode root = objectMapper.readTree(rawJson);
-            JsonNode textNode = root.path("candidates").path(0).path("content").path("parts").path(0).path("text");
-            if (!textNode.isMissingNode()) {
-                return textNode.asText().trim();
-            }
-        } catch (Exception e) {
-            log.warn("Error parsing Gemini API response JSON: {}", e.getMessage());
+    static class GeminiApiException extends RuntimeException {
+        private final int statusCode;
+        private final String sanitizedMessage;
+
+        public GeminiApiException(int statusCode, String sanitizedMessage) {
+            super("HTTP " + statusCode + ": " + sanitizedMessage);
+            this.statusCode = statusCode;
+            this.sanitizedMessage = sanitizedMessage;
         }
-        return null;
+
+        public int getStatusCode() {
+            return statusCode;
+        }
+
+        public String getSanitizedMessage() {
+            return sanitizedMessage;
+        }
     }
 }

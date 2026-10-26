@@ -11,29 +11,52 @@ import com.paybridge.exception.ResourceNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.client.MockRestServiceServer;
+import org.springframework.test.web.client.ExpectedCount;
+import org.springframework.web.client.RestClient;
 
 import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.header;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.method;
+import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withStatus;
+import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 class AiExplanationServiceTest {
 
     private AiExplanationService aiExplanationService;
     private CompatibilityEngineService compatibilityEngineService;
+    private MockRestServiceServer mockServer;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    private final String baseUrl = "https://generativelanguage.googleapis.com";
+    private final String model = "gemini-3.8-flash";
+    private final String expectedEndpoint = baseUrl + "/v1beta/models/" + model + ":generateContent";
 
     @BeforeEach
     void setUp() {
         QrParserService qrParserService = new QrParserService();
         EvidenceStore evidenceStore = new EvidenceStore();
         compatibilityEngineService = new CompatibilityEngineService(qrParserService, evidenceStore);
-        aiExplanationService = new AiExplanationService(compatibilityEngineService, new ObjectMapper());
+
+        RestClient.Builder restClientBuilder = RestClient.builder();
+        mockServer = MockRestServiceServer.bindTo(restClientBuilder).build();
+        aiExplanationService = new AiExplanationService(compatibilityEngineService, objectMapper, restClientBuilder.build());
+        aiExplanationService.configure(baseUrl, model, "test-api-key");
     }
 
     @Test
     @DisplayName("AI-01: Explain a saved COMPATIBLE evaluation matches recorded decision and evidence")
     void testExplain_CompatibleEvaluation() {
+        aiExplanationService.configure(baseUrl, model, ""); // Test fallback when key empty
+
         CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
                 "EVAL-001",
                 CompatibilityStatus.COMPATIBLE,
@@ -55,6 +78,8 @@ class AiExplanationServiceTest {
     @Test
     @DisplayName("AI-02: Explain a saved CONDITIONAL evaluation describes conditions and limitations")
     void testExplain_ConditionalEvaluation() {
+        aiExplanationService.configure(baseUrl, model, "");
+
         CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
                 "EVAL-002",
                 CompatibilityStatus.CONDITIONAL,
@@ -76,6 +101,8 @@ class AiExplanationServiceTest {
     @Test
     @DisplayName("AI-03: Explain an UNVERIFIED evaluation communicates uncertainty clearly")
     void testExplain_UnverifiedEvaluation() {
+        aiExplanationService.configure(baseUrl, model, "");
+
         CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
                 "EVAL-003",
                 CompatibilityStatus.UNVERIFIED,
@@ -96,6 +123,8 @@ class AiExplanationServiceTest {
     @Test
     @DisplayName("AI-04: Graceful fallback when external Gemini API is unconfigured/unavailable")
     void testExplain_FallbackWhenGeminiUnavailable() {
+        aiExplanationService.configure(baseUrl, model, "");
+
         CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
                 "EVAL-004",
                 CompatibilityStatus.UNVERIFIED,
@@ -106,7 +135,6 @@ class AiExplanationServiceTest {
         );
         compatibilityEngineService.saveEvaluation(evaluation);
 
-        // Without GEMINI_API_KEY set, fallback executes safely
         AiExplanationResponse response = aiExplanationService.explain(new AiExplanationRequest("EVAL-004"));
 
         assertThat(response).isNotNull();
@@ -136,6 +164,8 @@ class AiExplanationServiceTest {
     @Test
     @DisplayName("AI-06: Untrusted evaluation data preserves recorded limitations")
     void testExplain_PreservesLimitations() {
+        aiExplanationService.configure(baseUrl, model, "");
+
         CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
                 "EVAL-006",
                 CompatibilityStatus.UNVERIFIED,
@@ -151,5 +181,282 @@ class AiExplanationServiceTest {
         assertThat(response.limitations())
                 .contains("Parsing does not verify merchant legal identity.")
                 .contains("Payment execution is not authorized.");
+    }
+
+    @Test
+    @DisplayName("Gemini Success: Parses live 200 OK response and extracts explanation text")
+    void testExplain_GeminiSuccess_ParsesText() {
+        CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
+                "EVAL-GEMINI-01",
+                CompatibilityStatus.COMPATIBLE,
+                "Bilateral agreement confirmed.",
+                List.of(),
+                List.of("Compatibility has not been confirmed."),
+                Instant.now()
+        );
+        compatibilityEngineService.saveEvaluation(evaluation);
+
+        mockServer.expect(requestTo(expectedEndpoint))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header("x-goog-api-key", "test-api-key"))
+                .andRespond(withSuccess("""
+                        {
+                          "candidates": [
+                            {
+                              "content": {
+                                "parts": [
+                                  {
+                                    "text": "Your payment method is compatible for this UPI QR transaction."
+                                  }
+                                ]
+                              },
+                              "finishReason": "STOP"
+                            }
+                          ]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        AiExplanationResponse response = aiExplanationService.explain(new AiExplanationRequest("EVAL-GEMINI-01"));
+
+        assertThat(response.explanation()).isEqualTo("Your payment method is compatible for this UPI QR transaction.");
+        assertThat(response.limitations()).contains("Compatibility has not been confirmed.");
+        mockServer.verify();
+    }
+
+    @Test
+    @DisplayName("Gemini Thinking Model: Skips internal thought parts and extracts non-thought text")
+    void testExplain_GeminiThinkingModel_ExtractsAnswer() {
+        CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
+                "EVAL-GEMINI-02",
+                CompatibilityStatus.CONDITIONAL,
+                "Terminal prerequisite required.",
+                List.of(),
+                List.of("Prerequisite required."),
+                Instant.now()
+        );
+        compatibilityEngineService.saveEvaluation(evaluation);
+
+        mockServer.expect(requestTo(expectedEndpoint))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "candidates": [
+                            {
+                              "content": {
+                                "parts": [
+                                  {
+                                    "thought": true,
+                                    "text": "The user needs an explanation. I will note the condition."
+                                  },
+                                  {
+                                    "thought": false,
+                                    "text": "Payment is conditional upon terminal enablement by the merchant acquiring bank."
+                                  }
+                                ]
+                              },
+                              "finishReason": "STOP"
+                            }
+                          ]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        AiExplanationResponse response = aiExplanationService.explain(new AiExplanationRequest("EVAL-GEMINI-02"));
+
+        assertThat(response.explanation()).isEqualTo("Payment is conditional upon terminal enablement by the merchant acquiring bank.");
+        mockServer.verify();
+    }
+
+    @Test
+    @DisplayName("Gemini 503 Transient: Retries on 503 and returns explanation on successful retry")
+    void testExplain_Gemini503_RetriesAndSucceeds() {
+        CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
+                "EVAL-GEMINI-03",
+                CompatibilityStatus.COMPATIBLE,
+                "Route active.",
+                List.of(),
+                List.of("Baseline limitation."),
+                Instant.now()
+        );
+        compatibilityEngineService.saveEvaluation(evaluation);
+
+        // Attempt 1: 503
+        mockServer.expect(requestTo(expectedEndpoint))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE).body("""
+                        {
+                          "error": {
+                            "code": 503,
+                            "message": "The model is overloaded. Please try again later.",
+                            "status": "UNAVAILABLE"
+                          }
+                        }
+                        """));
+
+        // Attempt 2: 200 OK
+        mockServer.expect(requestTo(expectedEndpoint))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "candidates": [
+                            {
+                              "content": {
+                                "parts": [
+                                  {
+                                    "text": "Routing is supported under current bilateral arrangements."
+                                  }
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        AiExplanationResponse response = aiExplanationService.explain(new AiExplanationRequest("EVAL-GEMINI-03"));
+
+        assertThat(response.explanation()).isEqualTo("Routing is supported under current bilateral arrangements.");
+        mockServer.verify();
+    }
+
+    @Test
+    @DisplayName("Gemini 503 Exhausted: Falls back gracefully to deterministic explanation after retries")
+    void testExplain_Gemini503_ExhaustedFallsBack() {
+        CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
+                "EVAL-GEMINI-04",
+                CompatibilityStatus.UNVERIFIED,
+                "No provider support found.",
+                List.of(),
+                List.of("Compatibility has not been confirmed."),
+                Instant.now()
+        );
+        compatibilityEngineService.saveEvaluation(evaluation);
+
+        // All attempts return 503 (initial attempt + 2 retries = 3 calls)
+        mockServer.expect(ExpectedCount.times(3), requestTo(expectedEndpoint))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.SERVICE_UNAVAILABLE).body("""
+                        {
+                          "error": {
+                            "code": 503,
+                            "message": "Service unavailable due to high demand.",
+                            "status": "UNAVAILABLE"
+                          }
+                        }
+                        """));
+
+        AiExplanationResponse response = aiExplanationService.explain(new AiExplanationRequest("EVAL-GEMINI-04"));
+
+        // Verifies fallback was activated
+        assertThat(response.explanation()).contains("Provider support has not been verified. Further evidence is required.");
+        assertThat(response.limitations()).contains("Compatibility has not been confirmed.");
+        mockServer.verify();
+    }
+
+    @Test
+    @DisplayName("Gemini 404 Model Not Found: Fails fast without retries and activates fallback")
+    void testExplain_Gemini404_FailsFastToFallback() {
+        CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
+                "EVAL-GEMINI-05",
+                CompatibilityStatus.UNVERIFIED,
+                "Evaluation reason.",
+                List.of(),
+                List.of("Compatibility has not been confirmed."),
+                Instant.now()
+        );
+        compatibilityEngineService.saveEvaluation(evaluation);
+
+        // 404 should be called exactly once (no retries)
+        mockServer.expect(ExpectedCount.once(), requestTo(expectedEndpoint))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withStatus(HttpStatus.NOT_FOUND).body("""
+                        {
+                          "error": {
+                            "code": 404,
+                            "message": "models/gemini-old is not found for API version v1beta.",
+                            "status": "NOT_FOUND"
+                          }
+                        }
+                        """));
+
+        AiExplanationResponse response = aiExplanationService.explain(new AiExplanationRequest("EVAL-GEMINI-05"));
+
+        assertThat(response.explanation()).contains("Provider support has not been verified. Further evidence is required.");
+        mockServer.verify();
+    }
+
+    @Test
+    @DisplayName("Gemini Malformed JSON: Safely activates fallback without unhandled exceptions")
+    void testExplain_GeminiMalformedJson_FallsBack() {
+        CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
+                "EVAL-GEMINI-06",
+                CompatibilityStatus.COMPATIBLE,
+                "Route active.",
+                List.of(),
+                List.of("Limitation."),
+                Instant.now()
+        );
+        compatibilityEngineService.saveEvaluation(evaluation);
+
+        mockServer.expect(requestTo(expectedEndpoint))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("Not Valid JSON", MediaType.APPLICATION_JSON));
+
+        AiExplanationResponse response = aiExplanationService.explain(new AiExplanationRequest("EVAL-GEMINI-06"));
+
+        assertThat(response.explanation()).contains("Bilateral payment route linkage confirms compatibility");
+        mockServer.verify();
+    }
+
+    @Test
+    @DisplayName("Gemini Empty Candidates: Activates fallback when candidates array is empty")
+    void testExplain_GeminiEmptyCandidates_FallsBack() {
+        CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
+                "EVAL-GEMINI-07",
+                CompatibilityStatus.COMPATIBLE,
+                "Route active.",
+                List.of(),
+                List.of("Limitation."),
+                Instant.now()
+        );
+        compatibilityEngineService.saveEvaluation(evaluation);
+
+        mockServer.expect(requestTo(expectedEndpoint))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("{\"candidates\": []}", MediaType.APPLICATION_JSON));
+
+        AiExplanationResponse response = aiExplanationService.explain(new AiExplanationRequest("EVAL-GEMINI-07"));
+
+        assertThat(response.explanation()).contains("Bilateral payment route linkage confirms compatibility");
+        mockServer.verify();
+    }
+
+    @Test
+    @DisplayName("Gemini Safety Block: Activates fallback when candidate is blocked by policy")
+    void testExplain_GeminiSafetyBlock_FallsBack() {
+        CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
+                "EVAL-GEMINI-08",
+                CompatibilityStatus.UNVERIFIED,
+                "Unknown route.",
+                List.of(),
+                List.of("Limitation."),
+                Instant.now()
+        );
+        compatibilityEngineService.saveEvaluation(evaluation);
+
+        mockServer.expect(requestTo(expectedEndpoint))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "candidates": [
+                            {
+                              "finishReason": "SAFETY"
+                            }
+                          ]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        AiExplanationResponse response = aiExplanationService.explain(new AiExplanationRequest("EVAL-GEMINI-08"));
+
+        assertThat(response.explanation()).contains("Provider support has not been verified. Further evidence is required.");
+        mockServer.verify();
     }
 }
