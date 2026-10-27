@@ -37,7 +37,7 @@ class AiExplanationServiceTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private final String baseUrl = "https://generativelanguage.googleapis.com";
-    private final String model = "gemini-3.8-flash";
+    private final String model = "gemini-3.5-flash-lite";
     private final String expectedEndpoint = baseUrl + "/v1beta/models/" + model + ":generateContent";
 
     @BeforeEach

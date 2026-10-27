@@ -51,7 +51,7 @@ public class AiExplanationService {
     @Value("${gemini.api-key:}")
     private String geminiApiKey;
 
-    @Value("${gemini.model:gemini-3.8-flash}")
+    @Value("${gemini.model:gemini-3.5-flash-lite}")
     private String geminiModel;
 
     @Autowired
@@ -155,7 +155,7 @@ public class AiExplanationService {
         String cleanBaseUrl = (geminiBaseUrl != null && !geminiBaseUrl.isBlank())
                 ? geminiBaseUrl.trim().replaceAll("/+$", "")
                 : "https://generativelanguage.googleapis.com";
-        String modelName = (geminiModel != null && !geminiModel.isBlank()) ? geminiModel.trim() : "gemini-3.8-flash";
+        String modelName = (geminiModel != null && !geminiModel.isBlank()) ? geminiModel.trim() : "gemini-3.5-flash-lite";
 
         // Construct clean endpoint URL without passing credentials in query parameters
         String url = cleanBaseUrl + "/v1beta/models/" + modelName + ":generateContent";
