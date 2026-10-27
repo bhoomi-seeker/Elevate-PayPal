@@ -12,6 +12,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -33,6 +35,7 @@ import java.util.regex.Pattern;
 public class CompatibilityEngineService {
 
     private static final Pattern COUNTRY_CODE_PATTERN = Pattern.compile("^[A-Za-z]{2}$");
+    private static final Set<String> ISO_COUNTRY_CODES = Set.of(Locale.getISOCountries());
 
     private final QrParserService qrParserService;
     private final EvidenceStore evidenceStore;
@@ -85,13 +88,27 @@ public class CompatibilityEngineService {
                 limitations.add("Compatibility has not been confirmed. Unverified status indicates lack of documented evidence.");
             } else {
                 var record = evidenceRecordOpt.get();
-                evidence.addAll(record.evidenceItems());
+                if (record.evidenceItems() != null) {
+                    evidence.addAll(record.evidenceItems().stream()
+                            .filter(item -> item != null)
+                            .toList());
+                }
 
                 if (!record.activeAndValid()) {
                     // COMP-04: Evidence is expired or outdated -> UNVERIFIED
                     status = CompatibilityStatus.UNVERIFIED;
                     reason = "Documented evidence for provider '" + candidate + "' is expired or outdated; current compatibility cannot be confirmed.";
                     limitations.add("Historical or expired documentation cannot be used to verify active payment capabilities.");
+                } else if (record.evidenceItems() == null || record.evidenceItems().isEmpty()
+                        || record.evidenceItems().stream().anyMatch(item ->
+                                item == null
+                                || !item.valid()
+                                || item.source() == null || item.source().isBlank()
+                                || item.description() == null || item.description().isBlank()
+                                || item.supportLevel() == null || item.supportLevel().isBlank())) {
+                    status = CompatibilityStatus.UNVERIFIED;
+                    reason = "Provider evidence is missing or incomplete; current compatibility cannot be confirmed.";
+                    limitations.add("Compatibility requires at least one complete, valid evidence item.");
                 } else if (record.conflicting()) {
                     // COMP-06: Conflicting evidence sources -> UNVERIFIED
                     status = CompatibilityStatus.UNVERIFIED;
@@ -138,7 +155,9 @@ public class CompatibilityEngineService {
         if (request.visitorCountry() == null || request.visitorCountry().isBlank()) {
             throw new InvalidEvaluationRequestException("visitorCountry must not be empty or blank.");
         }
-        if (!COUNTRY_CODE_PATTERN.matcher(request.visitorCountry().trim()).matches()) {
+        String normalizedCountry = request.visitorCountry().trim().toUpperCase(Locale.ROOT);
+        if (!COUNTRY_CODE_PATTERN.matcher(normalizedCountry).matches()
+                || !ISO_COUNTRY_CODES.contains(normalizedCountry)) {
             throw new InvalidEvaluationRequestException("visitorCountry must be a 2-letter ISO country code (e.g., 'DE', 'SG', 'US').");
         }
         if (request.candidateProvider() == null || request.candidateProvider().isBlank()) {

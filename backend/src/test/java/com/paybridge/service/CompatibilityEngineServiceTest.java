@@ -276,4 +276,92 @@ class CompatibilityEngineServiceTest {
         assertThat(list).extracting(CompatibilityEvaluationResponse::evaluationId)
                 .containsExactlyInAnyOrder(res1.evaluationId(), res2.evaluationId());
     }
+
+    @Test
+    @DisplayName("Invalid ISO country code is rejected")
+    void testEvaluate_UnrecognizedCountryCode_ThrowsException() {
+        CompatibilityEvaluationRequest request = new CompatibilityEvaluationRequest(
+                validQr,
+                "ZZ",
+                "upi-global"
+        );
+
+        assertThatThrownBy(() -> compatibilityEngineService.evaluate(request))
+                .isInstanceOf(InvalidEvaluationRequestException.class);
+    }
+
+    @Test
+    @DisplayName("Active provider without evidence items remains UNVERIFIED")
+    void testEvaluate_UnverifiedWhenEvidenceItemsAreEmpty() {
+        evidenceStore.registerRecord(new EvidenceStore.ProviderEvidenceRecord(
+                "empty-evidence-provider",
+                "DE",
+                true,
+                true,
+                false,
+                null,
+                java.util.List.of()
+        ));
+
+        CompatibilityEvaluationRequest request = new CompatibilityEvaluationRequest(
+                validQr,
+                "DE",
+                "empty-evidence-provider"
+        );
+
+        CompatibilityEvaluationResponse response = compatibilityEngineService.evaluate(request);
+
+        assertThat(response.status()).isEqualTo(CompatibilityStatus.UNVERIFIED);
+        assertThat(response.evidence()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("Active provider with null evidence list remains UNVERIFIED")
+    void testEvaluate_UnverifiedWhenEvidenceItemsAreNull() {
+        evidenceStore.registerRecord(new EvidenceStore.ProviderEvidenceRecord(
+                "null-evidence-provider",
+                "DE",
+                true,
+                true,
+                false,
+                null,
+                null
+        ));
+
+        CompatibilityEvaluationRequest request = new CompatibilityEvaluationRequest(
+                validQr,
+                "DE",
+                "null-evidence-provider"
+        );
+
+        CompatibilityEvaluationResponse response = compatibilityEngineService.evaluate(request);
+
+        assertThat(response.status()).isEqualTo(CompatibilityStatus.UNVERIFIED);
+        assertThat(response.evidence()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("Active provider with malformed evidence item remains UNVERIFIED")
+    void testEvaluate_UnverifiedWhenEvidenceItemIsNull() {
+        evidenceStore.registerRecord(new EvidenceStore.ProviderEvidenceRecord(
+                "malformed-evidence-provider",
+                "DE",
+                true,
+                true,
+                false,
+                null,
+                java.util.Arrays.asList((com.paybridge.dto.EvidenceItem) null)
+        ));
+
+        CompatibilityEvaluationRequest request = new CompatibilityEvaluationRequest(
+                validQr,
+                "DE",
+                "malformed-evidence-provider"
+        );
+
+        CompatibilityEvaluationResponse response = compatibilityEngineService.evaluate(request);
+
+        assertThat(response.status()).isEqualTo(CompatibilityStatus.UNVERIFIED);
+        assertThat(response.evidence()).isEmpty();
+    }
 }

@@ -70,7 +70,7 @@ class AiExplanationServiceTest {
         AiExplanationResponse response = aiExplanationService.explain(new AiExplanationRequest("EVAL-001"));
 
         assertThat(response.evaluationId()).isEqualTo("EVAL-001");
-        assertThat(response.explanation()).contains("Bilateral payment route linkage confirms compatibility");
+        assertThat(response.explanation()).contains("The recorded evaluation indicates that the payment route meets the documented compatibility criteria");
         assertThat(response.explanation()).contains("upi-global");
         assertThat(response.limitations()).contains("Parsing does not verify merchant identity.");
     }
@@ -402,7 +402,7 @@ class AiExplanationServiceTest {
 
         AiExplanationResponse response = aiExplanationService.explain(new AiExplanationRequest("EVAL-GEMINI-06"));
 
-        assertThat(response.explanation()).contains("Bilateral payment route linkage confirms compatibility");
+        assertThat(response.explanation()).contains("The recorded evaluation indicates that the payment route meets the documented compatibility criteria");
         mockServer.verify();
     }
 
@@ -425,7 +425,128 @@ class AiExplanationServiceTest {
 
         AiExplanationResponse response = aiExplanationService.explain(new AiExplanationRequest("EVAL-GEMINI-07"));
 
-        assertThat(response.explanation()).contains("Bilateral payment route linkage confirms compatibility");
+        assertThat(response.explanation()).contains("The recorded evaluation indicates that the payment route meets the documented compatibility criteria");
+        mockServer.verify();
+    }
+
+    @Test
+    @DisplayName("Rejects unsupported Gemini claims for UNVERIFIED evaluations")
+    void testExplain_UnverifiedEvaluation_RejectsUnsupportedGeminiClaim() {
+        CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
+                "EVAL-GEMINI-09",
+                CompatibilityStatus.UNVERIFIED,
+                "No authoritative documentation establishes payment route compatibility.",
+                List.of(),
+                List.of("Compatibility has not been confirmed."),
+                Instant.now()
+        );
+        compatibilityEngineService.saveEvaluation(evaluation);
+
+        mockServer.expect(requestTo(expectedEndpoint))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "candidates": [
+                            {
+                              "content": {
+                                "parts": [
+                                  {
+                                    "text": "Your payment is guaranteed to work successfully."
+                                  }
+                                ]
+                              },
+                              "finishReason": "STOP"
+                            }
+                          ]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        AiExplanationResponse response = aiExplanationService.explain(
+                new AiExplanationRequest("EVAL-GEMINI-09"));
+
+        assertThat(response.explanation())
+                .contains("Provider support has not been verified. Further evidence is required.")
+                .doesNotContain("guaranteed to work");
+        mockServer.verify();
+    }
+    @Test
+    @DisplayName("Rejects unsupported Gemini guarantees for CONDITIONAL evaluations")
+    void testExplain_ConditionalEvaluation_RejectsUnsupportedGuarantee() {
+        CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
+                "EVAL-GEMINI-10",
+                CompatibilityStatus.CONDITIONAL,
+                "Compatibility depends on merchant terminal and provider prerequisites.",
+                List.of(),
+                List.of("Merchant and provider prerequisites require verification."),
+                Instant.now()
+        );
+        compatibilityEngineService.saveEvaluation(evaluation);
+
+        mockServer.expect(requestTo(expectedEndpoint))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "candidates": [
+                            {
+                              "content": {
+                                "parts": [
+                                  {
+                                    "text": "Your payment is assured to succeed."
+                                  }
+                                ]
+                              },
+                              "finishReason": "STOP"
+                            }
+                          ]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        AiExplanationResponse response = aiExplanationService.explain(
+                new AiExplanationRequest("EVAL-GEMINI-10"));
+
+        assertThat(response.explanation())
+                .contains("Payment route compatibility is conditional.")
+                .doesNotContain("assured to succeed");
+        mockServer.verify();
+    }
+    @Test
+    @DisplayName("Rejects unsupported Gemini guarantees for COMPATIBLE evaluations")
+    void testExplain_CompatibleEvaluation_RejectsUnsupportedGuarantee() {
+        CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
+                "EVAL-GEMINI-11",
+                CompatibilityStatus.COMPATIBLE,
+                "Route active.",
+                List.of(),
+                List.of("Limitation."),
+                Instant.now()
+        );
+        compatibilityEngineService.saveEvaluation(evaluation);
+
+        mockServer.expect(requestTo(expectedEndpoint))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "candidates": [
+                            {
+                              "content": {
+                                "parts": [
+                                  {
+                                    "text": "Your payment is guaranteed to succeed."
+                                  }
+                                ]
+                              },
+                              "finishReason": "STOP"
+                            }
+                          ]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        AiExplanationResponse response = aiExplanationService.explain(
+                new AiExplanationRequest("EVAL-GEMINI-11"));
+
+        assertThat(response.explanation())
+                .contains("The recorded evaluation indicates that the payment route meets the documented compatibility criteria")
+                .doesNotContain("guaranteed to succeed");
         mockServer.verify();
     }
 
