@@ -106,7 +106,23 @@ class PayPalPaymentServiceTest {
                 .andRespond(withSuccess("""
                         {
                           "id": "SANDBOX_ORDER_001",
-                          "status": "COMPLETED"
+                          "status": "COMPLETED",
+                          "purchase_units": [
+                            {
+                              "payments": {
+                                "captures": [
+                                  {
+                                    "id": "SANDBOX_CAPTURE_001",
+                                    "status": "COMPLETED",
+                                    "amount": {
+                                      "currency_code": "USD",
+                                      "value": "5.00"
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          ]
                         }
                         """, MediaType.APPLICATION_JSON));
 
@@ -119,6 +135,166 @@ class PayPalPaymentServiceTest {
         mockServer.verify();
     }
 
+    @Test
+    @DisplayName("PAY-08: Missing capture status is rejected")
+    void testCaptureOrder_MissingStatus_ThrowsException() {
+        mockServer.expect(requestTo(baseUrl + "/v1/oauth2/token"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "access_token": "mock-access-token-12345",
+                          "expires_in": 32400
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        mockServer.expect(requestTo(baseUrl + "/v2/checkout/orders/SANDBOX_ORDER_002/capture"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "id": "SANDBOX_ORDER_002"
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        assertThatThrownBy(() -> paymentService.captureOrder("SANDBOX_ORDER_002"))
+                .isInstanceOf(PaymentServiceException.class)
+                .hasMessageContaining("PayPal Sandbox API");
+
+        mockServer.verify();
+    }
+
+    @Test
+    @DisplayName("PAY-09: Missing capture order ID is rejected")
+    void testCaptureOrder_MissingOrderId_ThrowsException() {
+        mockServer.expect(requestTo(baseUrl + "/v1/oauth2/token"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "access_token": "mock-access-token-12345",
+                          "expires_in": 32400
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        mockServer.expect(requestTo(baseUrl + "/v2/checkout/orders/SANDBOX_ORDER_003/capture"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "status": "COMPLETED"
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        assertThatThrownBy(() -> paymentService.captureOrder("SANDBOX_ORDER_003"))
+                .isInstanceOf(PaymentServiceException.class)
+                .hasMessageContaining("PayPal Sandbox API");
+
+        mockServer.verify();
+    }
+    @Test
+    @DisplayName("PAY-10: Completed order without capture details is rejected")
+    void testCaptureOrder_MissingCaptureDetails_ThrowsException() {
+        mockServer.expect(requestTo(baseUrl + "/v1/oauth2/token"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "access_token": "mock-access-token-12345",
+                          "expires_in": 32400
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        mockServer.expect(requestTo(baseUrl + "/v2/checkout/orders/SANDBOX_ORDER_004/capture"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "id": "SANDBOX_ORDER_004",
+                          "status": "COMPLETED"
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        assertThatThrownBy(() -> paymentService.captureOrder("SANDBOX_ORDER_004"))
+                .isInstanceOf(PaymentServiceException.class)
+                .hasMessageContaining("PayPal Sandbox API");
+
+        mockServer.verify();
+    }
+    @Test
+    @DisplayName("PAY-11: Pending capture status is preserved")
+    void testCaptureOrder_PendingCapture_ReturnsPendingStatus() {
+        mockServer.expect(requestTo(baseUrl + "/v1/oauth2/token"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "access_token": "mock-access-token-12345",
+                          "expires_in": 32400
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        mockServer.expect(requestTo(baseUrl + "/v2/checkout/orders/SANDBOX_ORDER_005/capture"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "id": "SANDBOX_ORDER_005",
+                          "status": "COMPLETED",
+                          "purchase_units": [
+                            {
+                              "payments": {
+                                "captures": [
+                                  {
+                                    "id": "SANDBOX_CAPTURE_005",
+                                    "status": "PENDING"
+                                  }
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        OrderCaptureResponse response = paymentService.captureOrder("SANDBOX_ORDER_005");
+
+        assertThat(response.orderId()).isEqualTo("SANDBOX_ORDER_005");
+        assertThat(response.status()).isEqualTo("PENDING");
+
+        mockServer.verify();
+    }
+    @Test
+    @DisplayName("PAY-12: Declined capture status is preserved")
+    void testCaptureOrder_DeclinedCapture_ReturnsDeclinedStatus() {
+        mockServer.expect(requestTo(baseUrl + "/v1/oauth2/token"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "access_token": "mock-access-token-12345",
+                          "expires_in": 32400
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        mockServer.expect(requestTo(baseUrl + "/v2/checkout/orders/SANDBOX_ORDER_006/capture"))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "id": "SANDBOX_ORDER_006",
+                          "status": "COMPLETED",
+                          "purchase_units": [
+                            {
+                              "payments": {
+                                "captures": [
+                                  {
+                                    "id": "SANDBOX_CAPTURE_006",
+                                    "status": "DECLINED"
+                                  }
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        OrderCaptureResponse response = paymentService.captureOrder("SANDBOX_ORDER_006");
+
+        assertThat(response.orderId()).isEqualTo("SANDBOX_ORDER_006");
+        assertThat(response.status()).isEqualTo("DECLINED");
+
+        mockServer.verify();
+    }
     @Test
     @DisplayName("PAY-04: Invalid/unknown order ID is rejected with ResourceNotFoundException")
     void testCaptureOrder_NotFound_ThrowsException() {

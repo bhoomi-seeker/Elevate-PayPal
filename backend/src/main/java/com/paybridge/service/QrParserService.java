@@ -164,7 +164,7 @@ public class QrParserService {
                     params.put(decodedKey, decodedValue);
                 }
             } catch (IllegalArgumentException e) {
-                throw new InvalidQrException("Malformed URL-encoded query in QR payload: " + e.getMessage(), e);
+                throw new InvalidQrException("Malformed URL-encoded query in QR payload.");
             }
         }
 

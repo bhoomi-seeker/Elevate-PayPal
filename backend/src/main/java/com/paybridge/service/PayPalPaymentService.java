@@ -214,8 +214,60 @@ public class PayPalPaymentService {
                     .body(String.class);
 
             JsonNode root = objectMapper.readTree(responseBody);
-            String capturedOrderId = root.path("id").asText(cleanOrderId);
-            String status = root.path("status").asText("COMPLETED");
+            String capturedOrderId = root.path("id").asText();
+            String orderStatus = root.path("status").asText();
+
+            if (capturedOrderId.isBlank() || !cleanOrderId.equals(capturedOrderId)) {
+                throw new PaymentServiceException(
+                        "PayPal Sandbox API returned an invalid order ID during capture.");
+            }
+            if (!java.util.Set.of("COMPLETED", "PENDING", "APPROVED", "VOIDED")
+                    .contains(orderStatus.toUpperCase(java.util.Locale.ROOT))) {
+                throw new PaymentServiceException(
+                        "PayPal Sandbox API returned an unsupported order status during capture.");
+            }
+
+            JsonNode purchaseUnits = root.path("purchase_units");
+            if (!purchaseUnits.isArray() || purchaseUnits.isEmpty()) {
+                throw new PaymentServiceException(
+                        "PayPal Sandbox API returned a capture response without purchase units.");
+            }
+
+            java.util.List<String> captureStatuses = new java.util.ArrayList<>();
+            for (JsonNode purchaseUnit : purchaseUnits) {
+                JsonNode captures = purchaseUnit.path("payments").path("captures");
+                if (!captures.isArray()) {
+                    throw new PaymentServiceException(
+                            "PayPal Sandbox API returned a capture response without capture details.");
+                }
+
+                for (JsonNode capture : captures) {
+                    String captureStatus = capture.path("status").asText();
+                    if (captureStatus.isBlank()) {
+                        throw new PaymentServiceException(
+                                "PayPal Sandbox API returned a capture without a status.");
+                    }
+                    captureStatuses.add(captureStatus.toUpperCase(java.util.Locale.ROOT));
+                }
+            }
+
+            if (captureStatuses.isEmpty()) {
+                throw new PaymentServiceException(
+                        "PayPal Sandbox API returned a capture response without capture details.");
+            }
+
+            String status;
+            if (captureStatuses.stream().allMatch("COMPLETED"::equals)) {
+                status = "COMPLETED";
+            } else if (captureStatuses.contains("PENDING")) {
+                status = "PENDING";
+            } else if (captureStatuses.stream().allMatch(s ->
+                    "DECLINED".equals(s) || "FAILED".equals(s))) {
+                status = captureStatuses.contains("DECLINED") ? "DECLINED" : "FAILED";
+            } else {
+                throw new PaymentServiceException(
+                        "PayPal Sandbox API returned an unsupported or inconsistent capture status.");
+            }
 
             Instant now = Instant.now();
             Instant created = existingRecord != null ? existingRecord.createdAt() : now;
