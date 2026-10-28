@@ -631,6 +631,47 @@ class AiExplanationServiceTest {
     }
 
     @Test
+    @DisplayName("Gemini Max Tokens: Activates fallback when response is truncated")
+    void testExplain_GeminiMaxTokens_FallsBack() {
+        CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
+                "EVAL-GEMINI-13",
+                CompatibilityStatus.UNVERIFIED,
+                "Unknown route.",
+                List.of(),
+                List.of("Limitation."),
+                Instant.now()
+        );
+        compatibilityEngineService.saveEvaluation(evaluation);
+
+        mockServer.expect(requestTo(expectedEndpoint))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "candidates": [
+                            {
+                              "content": {
+                                "parts": [
+                                  {
+                                    "text": "Provider support appears to be verified, but the explanation is incomplete"
+                                  }
+                                ]
+                              },
+                              "finishReason": "MAX_TOKENS"
+                            }
+                          ]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        AiExplanationResponse response = aiExplanationService.explain(
+                new AiExplanationRequest("EVAL-GEMINI-13"));
+
+        assertThat(response.explanation())
+                .contains("Provider support has not been verified. Further evidence is required.")
+                .doesNotContain("the explanation is incomplete");
+        mockServer.verify();
+    }
+
+    @Test
     @DisplayName("Rejects false provider verification claims")
     void testExplain_UnverifiedEvaluation_RejectsFalseProviderVerification() {
         CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(

@@ -235,8 +235,8 @@ public class AiExplanationService {
 
             JsonNode candidate = candidates.get(0);
             String finishReason = candidate.path("finishReason").asText("");
-            if ("SAFETY".equalsIgnoreCase(finishReason) || "BLOCK".equalsIgnoreCase(finishReason) || "RECITATION".equalsIgnoreCase(finishReason)) {
-                log.warn("Gemini candidate blocked or restricted by policy: {}", finishReason);
+            if ("SAFETY".equalsIgnoreCase(finishReason) || "BLOCK".equalsIgnoreCase(finishReason) || "RECITATION".equalsIgnoreCase(finishReason) || "MAX_TOKENS".equalsIgnoreCase(finishReason)) {
+                log.warn("Gemini candidate was blocked, restricted, or incomplete: {}", finishReason);
                 return null;
             }
 
