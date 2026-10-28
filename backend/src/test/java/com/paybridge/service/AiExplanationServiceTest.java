@@ -267,6 +267,55 @@ class AiExplanationServiceTest {
     }
 
     @Test
+    @DisplayName("Gemini Thinking Model: Falls back when response contains only internal thought parts")
+    void testExplain_GeminiThinkingModel_OnlyThoughtPartsFallsBack() {
+        CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
+                "EVAL-GEMINI-12",
+                CompatibilityStatus.UNVERIFIED,
+                "Provider support has not been verified.",
+                List.of(),
+                List.of("Further evidence is required."),
+                Instant.now()
+        );
+        compatibilityEngineService.saveEvaluation(evaluation);
+
+        mockServer.expect(requestTo(expectedEndpoint))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "candidates": [
+                            {
+                              "content": {
+                                "parts": [
+                                  {
+                                    "thought": true,
+                                    "text": "INTERNAL REASONING MUST NOT BE RETURNED"
+                                  },
+                                  {
+                                    "thought": true,
+                                    "text": "MORE INTERNAL REASONING"
+                                  }
+                                ]
+                              },
+                              "finishReason": "STOP"
+                            }
+                          ]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        AiExplanationResponse response = aiExplanationService.explain(
+                new AiExplanationRequest("EVAL-GEMINI-12"));
+
+        assertThat(response.explanation())
+                .contains("Provider support has not been verified.");
+        assertThat(response.explanation())
+                .doesNotContain("INTERNAL REASONING MUST NOT BE RETURNED");
+        assertThat(response.explanation())
+                .doesNotContain("MORE INTERNAL REASONING");
+
+        mockServer.verify();
+    }
+    @Test
     @DisplayName("Gemini 503 Transient: Retries on 503 and returns explanation on successful retry")
     void testExplain_Gemini503_RetriesAndSucceeds() {
         CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(

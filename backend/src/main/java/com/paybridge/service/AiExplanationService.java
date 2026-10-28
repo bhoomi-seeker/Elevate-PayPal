@@ -259,17 +259,7 @@ public class AiExplanationService {
                 return text;
             }
 
-            // Fallback to first part containing text if all parts had thought=true
-            for (JsonNode part : parts) {
-                if (part.has("text")) {
-                    String partText = part.path("text").asText().trim();
-                    if (!partText.isEmpty()) {
-                        return partText;
-                    }
-                }
-            }
-
-            log.warn("Gemini response parts contained no non-empty text content.");
+            log.warn("Gemini response parts contained no non-empty non-thought text content.");
             return null;
 
         } catch (Exception e) {
