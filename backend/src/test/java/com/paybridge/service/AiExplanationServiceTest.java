@@ -629,4 +629,46 @@ class AiExplanationServiceTest {
         assertThat(response.explanation()).contains("Provider support has not been verified. Further evidence is required.");
         mockServer.verify();
     }
+
+    @Test
+    @DisplayName("Rejects false provider verification claims")
+    void testExplain_UnverifiedEvaluation_RejectsFalseProviderVerification() {
+        CompatibilityEvaluationResponse evaluation = new CompatibilityEvaluationResponse(
+                "EVAL-GEMINI-12",
+                CompatibilityStatus.UNVERIFIED,
+                "No authoritative documentation establishes payment route compatibility.",
+                List.of(),
+                List.of("Compatibility has not been confirmed."),
+                Instant.now()
+        );
+        compatibilityEngineService.saveEvaluation(evaluation);
+
+        mockServer.expect(requestTo(expectedEndpoint))
+                .andExpect(method(HttpMethod.POST))
+                .andRespond(withSuccess("""
+                        {
+                          "candidates": [
+                            {
+                              "content": {
+                                "parts": [
+                                  {
+                                    "text": "Provider support is verified and compatibility is confirmed."
+                                  }
+                                ]
+                              },
+                              "finishReason": "STOP"
+                            }
+                          ]
+                        }
+                        """, MediaType.APPLICATION_JSON));
+
+        AiExplanationResponse response = aiExplanationService.explain(
+                new AiExplanationRequest("EVAL-GEMINI-12"));
+
+        assertThat(response.explanation())
+                .contains("Provider support has not been verified. Further evidence is required.")
+                .doesNotContain("Provider support is verified")
+                .doesNotContain("compatibility is confirmed");
+        mockServer.verify();
+    }
 }
