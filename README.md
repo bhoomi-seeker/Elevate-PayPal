@@ -1,4 +1,4 @@
-﻿# PayBridge AI 2.0
+﻿# PayBridge AI 
 
 **AI-Powered Cross-Border Payment Compatibility & Intelligence Platform**
 
@@ -85,7 +85,8 @@ spring.datasource.password=YOUR_MYSQL_PASSWORD
 `
 
 Alternatively, configure standard environment variables:
-- DB_USERNAME: Database username (default: oot)
+- DB_USERNAME: Database username (default: 
+oot)
 - DB_PASSWORD: Database password (default: empty)
 - PAYPAL_CLIENT_ID: PayPal Sandbox client ID
 - PAYPAL_CLIENT_SECRET: PayPal Sandbox client secret
