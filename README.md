@@ -2,7 +2,7 @@
 
 **AI-Powered Cross-Border Payment Compatibility & Intelligence Platform**
 
-PayBridge AI 2.0 is an intelligent payment routing and merchant compatibility platform built for the **Elevate-PayPal Hackathon**. It evaluates international payment-route compatibility against local UPI QR standards, explains evaluation verdicts using Google Gemini AI, demonstrates seamless checkout flows via PayPal Sandbox, and provides an interactive RouteIQ intelligence dashboard.
+PayBridge AI is an intelligent payment routing and merchant compatibility platform built for the **Elevate-PayPal Hackathon**. It evaluates international payment-route compatibility against local UPI QR standards, explains evaluation verdicts using Google Gemini AI, demonstrates seamless checkout flows via PayPal Sandbox, and provides an interactive RouteIQ intelligence dashboard.
 
 ---
 
